@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# hotspot-linux managed
+set -euo pipefail
+SVC=create_ap.service
+CONF=${HOTSPOT_CONF:-/etc/create_ap.conf}
+self=$(readlink -f -- "$0")
+repo=$(dirname -- "$(dirname -- "$self")")
+ctl=$repo/lib/lar-control.sh
+if [[ ! -x $ctl ]]; then
+    ctl=${HOTSPOT_LINUX_REPO:-@REPO@}/lib/lar-control.sh
+fi
+
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+trim() { local s=$1; s=${s#"${s%%[![:space:]]*}"}; s=${s%"${s##*[![:space:]]}"}; printf '%s' "$s"; }
+get_raw() { # raw value after KEY= (last match)
+    awk -F= -v k="$1" \
+        '$0 ~ "^[[:space:]]*" k "[[:space:]]*=" { v = substr($0, index($0, "=") + 1) }
+         END { print v }' "$CONF"
+}
+strip_dquotes() {
+    local s=$1
+    if [[ $s == '"'*'"' ]]; then s=${s#\"}; s=${s%\"}; fi
+    printf '%s' "$s"
+}
+
+[[ -f $CONF ]] || die "missing $CONF (is create_ap installed?)"
+
+# pick editor BEFORE sudo so the user's choice survives sudo env_reset
+ed=${VISUAL:-}
+if (( EUID != 0 )); then
+    if [[ -n $ed ]]; then
+        exec sudo -- env HOTSPOT_EDITOR="$ed" "$self" setting-root "$@"
+    fi
+    exec sudo -- "$self" setting-root "$@"
+fi
+[[ ${1:-} == setting-root ]] && shift
+[[ -n ${HOTSPOT_EDITOR:-} ]] && ed=$HOTSPOT_EDITOR
+[[ -n $ed ]] || ed=${EDITOR:-}
+if [[ -z $ed ]]; then
+    if command -v nano >/dev/null 2>&1; then ed=nano
+    elif command -v vi >/dev/null 2>&1; then ed=vi
+    fi
+fi
+if (( EUID != 0 )); then
+    if [[ -n $ed ]]; then
+        exec sudo -- env HOTSPOT_EDITOR="$ed" "$self" "$@"
+    fi
+    exec sudo -- "$self" "$@"
+fi
+[[ -n ${HOTSPOT_EDITOR:-} ]] && ed=$HOTSPOT_EDITOR
+[[ -n ${ed:-} ]] || die 'no editor found; install nano or set EDITOR'
+[[ -x $ctl ]] || die "control script not found: $ctl"
+
+old_ssid_raw=$(get_raw SSID)
+old_pass_raw=$(get_raw PASSPHRASE)
+old_ssid=$(strip_dquotes "$(trim "$old_ssid_raw")")
+
+# validate_conf: echoes an error message, returns non-zero if invalid
+validate_conf() {
+    local ssid_raw pass_raw ssid pass
+    bash -n "$CONF" 2>/dev/null || { printf '%s does not parse (bash -n failed)' "$CONF"; return 1; }
+    ssid_raw=$(trim "$(get_raw SSID)")
+    pass_raw=$(trim "$(get_raw PASSPHRASE)")
+    ssid=$(strip_dquotes "$ssid_raw")
+    pass=$(strip_dquotes "$pass_raw")
+    [[ -n $ssid ]] || { printf 'SSID is empty — set e.g. SSID=MyNet'; return 1; }
+    (( $(printf '%s' "$ssid" | wc -c) <= 32 )) || { printf 'SSID longer than 32 bytes (802.11 limit): %s' "$ssid"; return 1; }
+    [[ $ssid_raw == *[[:space:]]* ]] && { printf 'SSID contains spaces — quote it: SSID="%s"' "$ssid_raw"; return 1; }
+    [[ -n ${pass//[[:space:]]/} ]] || { printf 'PASSPHRASE is empty'; return 1; }
+    (( ${#pass} >= 8 )) || { printf 'passphrase too short (min 8 characters)'; return 1; }
+    if [[ $pass_raw == *[[:space:]]* ]]; then
+        printf 'PASSPHRASE contains spaces — quote it: PASSPHRASE="%s"' "$pass_raw"
+        return 1
+    fi
+    return 0
+}
+
+printf 'editing %s with %s ...\n' "$CONF" "$ed"
+cp -a -- "$CONF" "$CONF.bak-setting"
+# shellcheck disable=SC2086
+eval "$ed \"\$CONF\"" || {
+    cp -a -- "$CONF.bak-setting" "$CONF"
+    die 'editor exited with error; config unchanged'
+}
+err=$(validate_conf) || {
+    cp -a -- "$CONF.bak-setting" "$CONF"
+    die "invalid config (original restored): $err"
+}
+rm -f -- "$CONF.bak-setting"
+
+ssid_raw=$(trim "$(get_raw SSID)")
+pass_raw=$(trim "$(get_raw PASSPHRASE)")
+ssid=$(strip_dquotes "$ssid_raw")
+
+printf '%s\n' '--- config ---'
+if [[ $old_ssid_raw == "$ssid_raw" ]]; then
+    printf 'SSID: %s (unchanged)\n' "${old_ssid:-<empty>}"
+else
+    printf 'SSID: %s -> %s\n' "${old_ssid:-<empty>}" "$ssid"
+fi
+if [[ $old_pass_raw == "$pass_raw" ]]; then
+    printf '%s\n' 'passphrase: unchanged'
+else
+    printf '%s\n' 'passphrase: updated'
+fi
+
+# ---- apply: restart if running, otherwise remind ------------------------
+if systemctl is-active --quiet "$SVC"; then
+    printf '%s\n' 'hotspot is ON — restarting to apply ...'
+    "$ctl" stop
+    "$ctl" start
+    live_ssid=$(iw dev ap0 info 2>/dev/null | awk '$1 == "ssid" { print $2 }')
+    if [[ -n $live_ssid ]]; then
+        printf 'live SSID now: %s\n' "$live_ssid"
+    fi
+else
+    printf '%s\n' 'config saved. hotspot is OFF — start with: hotspot-on'
+fi

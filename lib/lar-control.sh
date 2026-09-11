@@ -176,16 +176,26 @@ cmd_stop() {
     printf '%s\n' 'hotspot is OFF.'
 }
 
+cmd_setting() {
+    # delegate to the wrapper (same validate + auto-restart logic); if we were
+    # invoked by root directly, the wrapper skips its sudo re-exec (EUID == 0)
+    local script_dir bin_dir
+    script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+    bin_dir=$script_dir/../bin/hotspot-setting
+    [[ -x $bin_dir ]] || die "missing $bin_dir (run from the hotspot-linux repo)"
+    exec "$bin_dir"
+}
+
 cmd_install_cmds() {
     need_root install-cmds
     local script_dir bin_dir f dest
     script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
     bin_dir=$(cd -- "$script_dir/../bin" && pwd -P)
-    for f in hotspot-on hotspot-off; do
+    for f in hotspot-on hotspot-off hotspot-setting; do
         [[ -x $bin_dir/$f ]] || die "missing $bin_dir/$f (run from the hotspot-linux repo)"
     done
     install -d -m 0755 /usr/local/bin
-    for f in hotspot-on hotspot-off; do
+    for f in hotspot-on hotspot-off hotspot-setting; do
         dest=/usr/local/bin/$f
         if [[ -e $dest ]]; then
             grep -q '^# hotspot-linux managed' "$dest" ||
@@ -196,17 +206,18 @@ cmd_install_cmds() {
         mv "$dest.tmp" "$dest"
     done
     printf '%s\n' \
-        'Installed: hotspot-on, hotspot-off (in /usr/local/bin).' \
-        'Start with: hotspot-on   Stop with: hotspot-off'
+        'Installed: hotspot-on, hotspot-off, hotspot-setting (in /usr/local/bin).' \
+        'Start with: hotspot-on   Stop with: hotspot-off   Settings: hotspot-setting'
 }
 
 case ${1:-} in
     status)       cmd_status ;;
     start)        cmd_start ;;
     stop)         cmd_stop ;;
+    setting)      cmd_setting ;;
     enable)       cmd_enable ;;
     rollback)     cmd_rollback ;;
     verify)       cmd_verify ;;
     install-cmds) cmd_install_cmds ;;
-    *) die "usage: $0 {status|start|stop|enable|rollback|verify|install-cmds}" ;;
+    *) die "usage: $0 {status|start|stop|setting|enable|rollback|verify|install-cmds}" ;;
 esac

@@ -68,12 +68,24 @@ channel 149), NAT-shared to the internet.
 
 ## Changing SSID / password
 
-Both live in `/etc/create_ap.conf` (default install: `SSID=MyAccessPoint`,
-`PASSPHRASE=12345678`):
+The easy way:
+
+```bash
+hotspot-setting
+```
+
+Opens `/etc/create_ap.conf` in nano (or `$VISUAL`/`$EDITOR`), then
+validates (SSID non-empty ≤32 bytes, passphrase ≥8 chars, no unquoted
+spaces, file still parses), **auto-restarts the hotspot if it is running**
+and prints the live SSID afterwards. A broken edit is rejected and the
+original config restored. Requires sudo when the hotspot is ON.
+
+Manual way — both live in `/etc/create_ap.conf` (default install:
+`SSID=MyAccessPoint`, `PASSPHRASE=12345678`):
 
 ```bash
 sudo nano /etc/create_ap.conf   # edit the SSID= and PASSPHRASE= lines
-hotspot-off && hotspot-on       # (or just hotspot-on if it was stopped)
+hotspot-off && hotspot-on       # config is only read at start!
 ```
 
 - Passphrase must be **at least 8 characters** or hostapd refuses to start.
