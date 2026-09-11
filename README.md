@@ -66,6 +66,23 @@ sudo lib/lar-control.sh install-cmds
 Client connects on the same 5 GHz channel as your station uplink (e.g.
 channel 149), NAT-shared to the internet.
 
+## Changing SSID / password
+
+Both live in `/etc/create_ap.conf` (default install: `SSID=MyAccessPoint`,
+`PASSPHRASE=12345678`):
+
+```bash
+sudo nano /etc/create_ap.conf   # edit the SSID= and PASSPHRASE= lines
+hotspot-off && hotspot-on       # (or just hotspot-on if it was stopped)
+```
+
+- Passphrase must be **at least 8 characters** or hostapd refuses to start.
+- Avoid `=` inside the SSID; don't indent the lines.
+- All clients disconnect once and re-auth with the new credentials — normal.
+- No reinstall needed; the commands read the config on every start.
+- Optional: set `HIDDEN=1` in the same file to hide the SSID from scans
+  (clients must then add the network manually by typing the SSID).
+
 ## Hotspot autostart (optional)
 
 Autostart is **OFF by design** — the hotspot only runs when you run
