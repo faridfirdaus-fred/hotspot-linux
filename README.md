@@ -102,6 +102,55 @@ upgrade if you want the hotspot back on 5 GHz.
 
 - `install.sh` — full installer (download → verify → patch → build → install → commands)
 - `bin/hotspot-on` / `bin/hotspot-off` — start/stop the hotspot (installed to `/usr/local/bin`)
-- `lib/lar-control.sh` — status / start / stop / enable / rollback / verify
+- `lib/lar-control.sh` — status / start / stop / enable / rollback / verify / install-cmds
 - `patches/lar_disable.patch` — the only kernel change (adds `lar_disable=true`)
 - `config/create_ap.conf.example` — hotspot config template
+
+## Troubleshooting
+
+Passwordless fast paths vs sudo prompt (how the wrappers behave):
+
+- `hotspot-on` while already ON → prints the summary, **no password**.
+- `hotspot-off` while already OFF → prints "already OFF", **no password**.
+- Any real transition (start or stop) → the wrapper runs itself under `sudo`
+  automatically; you type your password once.
+- Technically: the wrapper only checks `systemctl is-active` (read-only) and
+  either runs `lib/lar-control.sh` directly or re-executes under `sudo`.
+  It never parses output to decide, so it can't be fooled by locale.
+
+Summary line right after `hotspot-on` may briefly show `0 client(s)` — clients
+reconnect within seconds. The start command waits (up to 20 s) until ap0's
+channel is actually programmed before reporting it.
+
+### Common failures
+
+- **`ERROR: run with sudo: sudo ... lar-control.sh <cmd>` printed by the
+  control script itself** — you ran it directly without sudo. The
+  `hotspot-on`/`hotspot-off` wrappers handle elevation for you; use them.
+- **`hotspot is ON — ap0: N client(s), channel: unknown`** (fixed in
+  `c5e23af`) — if your installed copy still shows this, refresh the commands:
+  `cd ~/hotspot-linux && git pull && sudo lib/lar-control.sh install-cmds`.
+- **`ap0 did not come up`** — check
+  `journalctl -b -u create_ap.service --no-pager`. If it says
+  `Frequency 5745 not allowed for AP mode` or
+  `Hardware does not support configured channel`, the patched module is not
+  loaded: run `sudo lib/lar-control.sh status` — it must say PASS; if it
+  says "reboot required", you are on a kernel without the override
+  (re-run `sudo ./install.sh` and reboot).
+- **`override already installed` / `config already exists`** during
+  `install.sh` — a previous install exists. Remove it first:
+  `sudo lib/lar-control.sh rollback && sudo reboot`, then re-run
+  `sudo ./install.sh`. (If the regdom config was changed by hand, rollback
+  refuses and asks you to inspect it — intentional.)
+- **`$f exists and is not ours`** for `hotspot-on`/`hotspot-off` — something
+  else owns those names in `/usr/local/bin`; remove/replace it manually, the
+  installer refuses to overwrite foreign files.
+- **Secure Boot error in preflight** — the rebuilt module is unsigned;
+  Secure Boot must be off (`mokutil --sb-state` shows
+  `SecureBoot disabled`).
+- **Wi-Fi uplink drops the hotspot channel** — the AP rides the station's
+  channel; if your router moves the uplink (e.g. from 149 to another DFS
+  channel), stop the hotspot (`hotspot-off`), reconnect, start again
+  (`hotspot-on`). With `country ID` and LAR disabled the driver no longer
+  self-manages channels, so 149 stays AP-capable.
+
