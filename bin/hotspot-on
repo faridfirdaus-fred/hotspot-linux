@@ -1,14 +1,30 @@
 #!/usr/bin/env bash
 # hotspot-linux managed
 set -euo pipefail
+verb=start
 self=$(readlink -f -- "$0")
 repo=$(dirname -- "$(dirname -- "$self")")
 ctl=$repo/lib/lar-control.sh
 if [[ ! -x $ctl ]]; then
     ctl=${HOTSPOT_LINUX_REPO:-@REPO@}/lib/lar-control.sh
 fi
+run() {
+    if [[ $EUID -eq 0 ]]; then "$@"; return; fi
+    local out rc
+    if out=$("$@" 2>&1); then
+        printf '%s\n' "$out"
+        return 0
+    fi
+    rc=$?
+    # elevate only when the control script asks for root
+    if (( rc == 1 )) && grep -q 'run with sudo' <<<"$out"; then
+        exec sudo "$@"
+    fi
+    printf '%s\n' "$out" >&2
+    return "$rc"
+}
 if [[ -x $ctl ]]; then
-    exec "$ctl" start
+    run "$ctl" "$verb"
 fi
 # repo moved or removed — plain service control fallback
-exec systemctl start create_ap.service
+run systemctl "$verb" create_ap.service
