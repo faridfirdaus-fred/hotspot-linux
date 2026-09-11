@@ -47,6 +47,7 @@ changes if anything fails.
 sudo lib/lar-control.sh status   # must report PASS
 hotspot-on                       # start the hotspot (prompts for sudo)
 hotspot-off                      # stop it
+hotspot-setting                  # edit SSID/passphrase (see below)
 ```
 
 `hotspot-on` is idempotent — when already running it prints a one-line
@@ -131,7 +132,8 @@ upgrade if you want the hotspot back on 5 GHz.
 
 - `install.sh` — full installer (download → verify → patch → build → install → commands)
 - `bin/hotspot-on` / `bin/hotspot-off` — start/stop the hotspot (installed to `/usr/local/bin`)
-- `lib/lar-control.sh` — status / start / stop / enable / rollback / verify / install-cmds
+- `bin/hotspot-setting` — edit SSID/passphrase: nano + validation + auto-restart
+- `lib/lar-control.sh` — status / start / stop / setting / enable / rollback / verify / install-cmds
 - `patches/lar_disable.patch` — the only kernel change (adds `lar_disable=true`)
 - `config/create_ap.conf.example` — hotspot config template
 
