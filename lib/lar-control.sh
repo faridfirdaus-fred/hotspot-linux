@@ -144,12 +144,15 @@ cmd_start() {
     module_parameter || die "patched iwlmvm is not active (lar_disable missing/off).
     install + reboot first, then check: $0 status"
     systemctl start "$SERVICE"
-    local i
+    local i ok=0
     for i in $(seq 1 40); do
-        iw dev ap0 info >/dev/null 2>&1 && break
+        # ready only when the channel is actually programmed on ap0
+        if iw dev ap0 info 2>/dev/null | grep -q '^[[:space:]]*channel'; then
+            ok=1; break
+        fi
         sleep 0.5
     done
-    if ! iw dev ap0 info >/dev/null 2>&1; then
+    if (( ok == 0 )); then
         die "ap0 did not come up; check: journalctl -b -u $SERVICE --no-pager"
     fi
     ap_summary
