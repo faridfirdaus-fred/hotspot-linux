@@ -173,12 +173,37 @@ cmd_stop() {
     printf '%s\n' 'hotspot is OFF.'
 }
 
+cmd_install_cmds() {
+    need_root install-cmds
+    local script_dir bin_dir f dest
+    script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+    bin_dir=$(cd -- "$script_dir/../bin" && pwd -P)
+    for f in hotspot-on hotspot-off; do
+        [[ -x $bin_dir/$f ]] || die "missing $bin_dir/$f (run from the hotspot-linux repo)"
+    done
+    install -d -m 0755 /usr/local/bin
+    for f in hotspot-on hotspot-off; do
+        dest=/usr/local/bin/$f
+        if [[ -e $dest ]]; then
+            grep -q '^# hotspot-linux managed' "$dest" ||
+                die "$dest exists and is not ours; remove it manually first"
+        fi
+        sed "s|@REPO@|$(dirname -- "$script_dir")|g" "$bin_dir/$f" > "$dest.tmp"
+        chmod 0755 "$dest.tmp"
+        mv "$dest.tmp" "$dest"
+    done
+    printf '%s\n' \
+        'Installed: hotspot-on, hotspot-off (in /usr/local/bin).' \
+        'Start with: hotspot-on   Stop with: hotspot-off'
+}
+
 case ${1:-} in
-    status)   cmd_status ;;
-    start)    cmd_start ;;
-    stop)     cmd_stop ;;
-    enable)   cmd_enable ;;
-    rollback) cmd_rollback ;;
-    verify)   cmd_verify ;;
-    *) die "usage: $0 {status|start|stop|enable|rollback|verify}" ;;
+    status)       cmd_status ;;
+    start)        cmd_start ;;
+    stop)         cmd_stop ;;
+    enable)       cmd_enable ;;
+    rollback)     cmd_rollback ;;
+    verify)       cmd_verify ;;
+    install-cmds) cmd_install_cmds ;;
+    *) die "usage: $0 {status|start|stop|enable|rollback|verify|install-cmds}" ;;
 esac

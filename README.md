@@ -55,6 +55,13 @@ no-op. If the repo ever moves, the installed commands still work (plain
 `systemctl` fallback) or can be pointed at the new location with
 `HOTSPOT_LINUX_REPO=/new/path`.
 
+Already installed the patched module the manual way (override present, no
+`hotspot-on` command yet)? Just install the commands:
+
+```bash
+sudo lib/lar-control.sh install-cmds
+```
+
 `create_ap` reads `/etc/create_ap.conf` (see `config/create_ap.conf.example`).
 Client connects on the same 5 GHz channel as your station uplink (e.g.
 channel 149), NAT-shared to the internet.
