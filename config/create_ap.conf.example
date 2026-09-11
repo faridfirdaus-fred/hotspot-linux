@@ -1,0 +1,30 @@
+# create_ap.conf — example for the patched iwlmvm setup.
+# Copy to /etc/create_ap.conf and edit SSID/PASSPHRASE.
+# The AP rides the SAME channel as your station uplink (here: 149).
+# Full option list: create_ap --help
+
+SSID=MyHotspot
+PASSPHRASE=change-me-minimum-8-chars
+
+WIFI_IFACE=wlan0
+INTERNET_IFACE=wlan0
+
+# 5 GHz band, channel 149 (5745 MHz) — allowed for AP once LAR is disabled
+FREQ_BAND=5
+CHANNEL=149
+COUNTRY=ID
+
+GATEWAY=192.168.12.1
+WPA_VERSION=2
+SHARE_METHOD=nat
+ETC_HOSTS=0
+DHCP_DNS=gateway
+NO_DNS=0
+NO_DNSMASQ=0
+HIDDEN=0
+
+IEEE80211N=1
+IEEE80211AC=1
+HT_CAPAB=[HT40+]
+VHT_CAPAB=
+VHT_CHWIDTH=20

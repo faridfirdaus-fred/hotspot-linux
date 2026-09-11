@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# hotspot-linux managed
+set -euo pipefail
+self=$(readlink -f -- "$0")
+repo=$(dirname -- "$(dirname -- "$self")")
+ctl=$repo/lib/lar-control.sh
+if [[ ! -x $ctl ]]; then
+    ctl=${HOTSPOT_LINUX_REPO:-@REPO@}/lib/lar-control.sh
+fi
+if [[ -x $ctl ]]; then
+    exec "$ctl" stop
+fi
+# repo moved or removed — plain service control fallback
+exec systemctl stop create_ap.service

@@ -1,0 +1,19 @@
+--- a/drivers/net/wireless/intel/iwlwifi/mvm/ops.c
++++ b/drivers/net/wireless/intel/iwlwifi/mvm/ops.c
+@@ -41,12 +41,16 @@
+ 
+ struct iwl_mvm_mod_params iwlmvm_mod_params = {
+ 	.power_scheme = IWL_POWER_SCHEME_BPS,
++	.lar_disable = true,
+ };
+ 
+ module_param_named(power_scheme, iwlmvm_mod_params.power_scheme, int, 0444);
+ MODULE_PARM_DESC(power_scheme,
+ 		 "power management scheme: 1-active, 2-balanced, 3-low power, default: 2");
+ 
++module_param_named(lar_disable, iwlmvm_mod_params.lar_disable, bool, 0444);
++MODULE_PARM_DESC(lar_disable, "disable LAR (Location Aware Regulatory), default: true");
++
+ /*
+  * module init and exit functions
+  */
