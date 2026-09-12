@@ -182,9 +182,9 @@ channel is actually programmed before reporting it.
   Secure Boot must be off (`mokutil --sb-state` shows
   `SecureBoot disabled`).
 - **Wi-Fi uplink moved to another channel** (e.g. `requested: channel 149`
-  but `connected: channel 36`) — no action needed: `hotspot-on` now aligns
+  but `connected: channel 36`) — no action needed: `hotspot-on` aligns
   `CHANNEL`/`FREQ_BAND` to the live uplink and starts cleanly, breaking any
-  restart loop first (`stop` + `reset-failed`). If you pinned a channel on
-  purpose in `/etc/create_ap.conf`, reconnect Wi-Fi to a network on that
-  channel first (or delete `CHANNEL=` to always follow the uplink).
+  restart loop first (`stop` + `reset-failed`). The previous channel is kept
+  in `/etc/create_ap.conf.bak-align`. If you pinned a channel on purpose in
+  `/etc/create_ap.conf`, reconnect Wi-Fi to a network on that channel first.
 

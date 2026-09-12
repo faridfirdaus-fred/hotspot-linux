@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # hotspot-linux — manage the patched iwlmvm install + hotspot autostart.
 # Target kernel defaults to the running one; override with IWLWVM_LAR_KVER.
+# Preferred entry points are the hotspot-on/off/setting wrappers
+# (installed to /usr/local/bin by install.sh / install-cmds).
 set -Eeuo pipefail
 
 KVER=${IWLWVM_LAR_KVER:-$(uname -r)}
@@ -117,7 +119,7 @@ cmd_status() {
     (( failed == 0 )) || return 1
     printf '%s\n' \
         'Runtime driver/regulatory checks PASS.' \
-        "Manual start: sudo systemctl start $SERVICE" \
+        "Start it: hotspot-on" \
         "Autostart is OFF by design; optional later: sudo $0 enable"
 }
 
