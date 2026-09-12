@@ -105,7 +105,9 @@ else
 fi
 
 # ---- apply: restart if running, otherwise remind ------------------------
-if systemctl is-active --quiet "$SVC"; then
+# NOTE: exact ActiveState check — activating/failed units also restart,
+# so a channel mismatch loop self-heals instead of needing manual cleanup.
+if [[ $(systemctl show "$SVC" -p ActiveState --value 2>/dev/null) == active ]]; then
     printf '%s\n' 'hotspot is ON — restarting to apply ...'
     "$ctl" stop
     "$ctl" start

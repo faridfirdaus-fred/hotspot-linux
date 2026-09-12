@@ -9,24 +9,27 @@ ctl=$repo/lib/lar-control.sh
 if [[ ! -x $ctl ]]; then
     ctl=${HOTSPOT_LINUX_REPO:-@REPO@}/lib/lar-control.sh
 fi
-is_active() { systemctl is-active --quiet "$SVC" 2>/dev/null; }
+is_on()  { [[ $(systemctl show "$SVC" -p ActiveState --value 2>/dev/null) == active ]]; }
+is_off() { local s; s=$(systemctl show "$SVC" -p ActiveState --value 2>/dev/null); [[ $s == inactive || $s == failed ]]; }
 
 if [[ -x $ctl ]]; then
-    # passwordless fast paths (read-only checks, no root needed)
-    if [[ $verb == start ]] && is_active; then
+    # passwordless fast paths (read-only checks, no root needed).
+    # Only exact states qualify: starting/crashed units still need root
+    # so the control script can stop/reset/align them.
+    if [[ $verb == start ]] && is_on; then
         exec "$ctl" start          # prints summary without root
     fi
-    if [[ $verb == stop ]] && ! is_active; then
-        exec "$ctl" stop           # prints 'already OFF' without root
+    if [[ $verb == stop ]] && is_off; then
+        exec "$ctl" stop           # 'already OFF' without root
     fi
     exec sudo "$ctl" "$verb"
 fi
 # repo moved or removed — plain service control fallback
-if [[ $verb == start ]] && is_active; then
+if [[ $verb == start ]] && is_on; then
     printf 'hotspot is ON (%s active).\n' "$SVC"
     exit 0
 fi
-if [[ $verb == stop ]] && ! is_active; then
+if [[ $verb == stop ]] && is_off; then
     printf 'hotspot is already OFF.\n'
     exit 0
 fi

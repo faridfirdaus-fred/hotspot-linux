@@ -27,6 +27,7 @@ TARGET=/lib/modules/$KVER/updates/iwlmvm.ko
 REGDOM=/etc/modprobe.d/cfg80211-regdom.conf
 BIN_ON=/usr/local/bin/hotspot-on
 BIN_OFF=/usr/local/bin/hotspot-off
+BIN_SET=/usr/local/bin/hotspot-setting
 
 [[ -s $PATCH ]] || die "missing $PATCH"
 [[ -d /lib/modules/$KVER ]] || die "no /lib/modules/$KVER"
@@ -98,7 +99,7 @@ if [[ -e $REGDOM ]]; then
     'options cfg80211 ieee80211_regdom=ID') ||
     die "$REGDOM exists and is not ours; inspect and remove it manually"
 fi
-for f in "$BIN_ON" "$BIN_OFF"; do
+for f in "$BIN_ON" "$BIN_OFF" "$BIN_SET"; do
   if [[ -e $f ]]; then
     grep -q '^# hotspot-linux managed' "$f" ||
       die "$f exists and is not ours; remove it manually first"
@@ -114,7 +115,7 @@ cleanup() {
     rm -f "$TARGET.tmp" "$REGDOM.tmp"
     [[ $installed  == yes ]] && rm -f "$TARGET"
     [[ $configured == yes ]] && rm -f "$REGDOM"
-    [[ $installed_cmds == yes ]] && rm -f "$BIN_ON" "$BIN_OFF" || true
+    [[ $installed_cmds == yes ]] && rm -f "$BIN_ON" "$BIN_OFF" "$BIN_SET" || true
     depmod "$KVER" 2>/dev/null || true
     [[ $was_enabled == yes ]] && systemctl enable  "$SERVICE" >/dev/null 2>&1 || true
     [[ $was_active  == yes ]] && systemctl start   "$SERVICE" >/dev/null 2>&1 || true
@@ -136,11 +137,13 @@ depmod "$KVER"
 install -d -m 0755 /usr/local/bin
 sed "s|@REPO@|$REPO|g" "$REPO/bin/hotspot-on"  > "$BIN_ON.tmp"
 sed "s|@REPO@|$REPO|g" "$REPO/bin/hotspot-off" > "$BIN_OFF.tmp"
-chmod 0755 "$BIN_ON.tmp" "$BIN_OFF.tmp"
+sed "s|@REPO@|$REPO|g" "$REPO/bin/hotspot-setting" > "$BIN_SET.tmp"
+chmod 0755 "$BIN_ON.tmp" "$BIN_OFF.tmp" "$BIN_SET.tmp"
 mv "$BIN_ON.tmp" "$BIN_ON"
 mv "$BIN_OFF.tmp" "$BIN_OFF"
+mv "$BIN_SET.tmp" "$BIN_SET"
 installed_cmds=yes
-info "commands installed: hotspot-on, hotspot-off"
+info "commands installed: hotspot-on, hotspot-off, hotspot-setting"
 trap - EXIT
 sel=$(modinfo -k "$KVER" -F filename iwlmvm 2>/dev/null || true)
 [[ $sel == "$TARGET" ]] || die "override not selected by depmod (selected: ${sel:-none})"

@@ -8,10 +8,65 @@ TARGET=/lib/modules/$KVER/updates/iwlmvm.ko
 TARGET_TMP=$TARGET.tmp
 REGDOM=/etc/modprobe.d/cfg80211-regdom.conf
 SERVICE=create_ap.service
+CONF=${HOTSPOT_CONF:-/etc/create_ap.conf}
 DROPIN=/etc/systemd/system/$SERVICE.d/iwlmvm-lar.conf
 
 die()      { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need_root(){ [[ $EUID -eq 0 ]] || die "run with sudo: sudo $0 $1"; }
+
+svc_state() { systemctl show "$SERVICE" -p ActiveState --value 2>/dev/null || echo unknown; }
+svc_is_on() { [[ $(svc_state) == active ]]; }
+svc_is_off() { local s; s=$(svc_state); [[ $s == inactive || $s == failed ]]; }
+
+conf_get() { # $1=KEY -> last value, trimmed, dequoted
+    local k=$1 v
+    v=$(grep -E "^[[:space:]]*$k[[:space:]]*=" "$CONF" 2>/dev/null | tail -n 1 || true)
+    v=${v#*=}
+    v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}
+    v=`printf "%s" "$v" | sed -e 's/^"//; s/"$//'`
+    printf '%s' "$v"
+}
+
+conf_set() { # $1=KEY $2=value -> replace active lines or append
+    local k=$1 v=$2
+    if grep -Eq "^[[:space:]]*$k[[:space:]]*=" "$CONF"; then
+        sed -i -E "s|^[[:space:]]*$k[[:space:]]*=.*|$k=$v|" "$CONF"
+    else
+        printf '%s=%s\n' "$k" "$v" >> "$CONF"
+    fi
+}
+
+uplink_iface() {
+    local w i
+    w=$(conf_get WIFI_IFACE); i=$(conf_get INTERNET_IFACE)
+    if [[ -n $w ]]; then printf '%s' "$w"
+    elif [[ -n $i ]]; then printf '%s' "$i"
+    else printf '%s' 'wlp0s20f3'
+    fi
+}
+
+align_channel() {
+    # Single radio: the AP must ride the station uplink's channel.
+    # Syncs CHANNEL (and FREQ_BAND) in $CONF to the live uplink channel.
+    local iface ch freq cfg_ch band
+    [[ -f $CONF ]] || { printf 'WARN: missing %s; keeping requested channel\n' "$CONF" >&2; return 0; }
+    iface=$(uplink_iface)
+    ch=$(iw dev "$iface" info 2>/dev/null | awk '$1=="channel"{print $2; exit}' || true)
+    freq=$(iw dev "$iface" info 2>/dev/null | awk '$1=="channel"{gsub(/[()]/,"",$3); print $3; exit}' || true)
+    [[ -n $ch ]] || return 0  # uplink down/disconnected: keep configured channel
+    cfg_ch=$(conf_get CHANNEL)
+    if [[ $cfg_ch != "$ch" ]]; then
+        cp -a -- "$CONF" "$CONF.bak-align"
+        conf_set CHANNEL "$ch"
+        if [[ -n $freq ]]; then
+            if (( freq < 3000 )); then band=2.4; else band=5; fi
+            conf_set FREQ_BAND "$band"
+        fi
+        printf 'aligning AP channel %s -> %s (uplink %s on channel %s%s)\n' \
+            "${cfg_ch:-unset}" "$ch" "$iface" "$ch" "${freq:+ / $freq MHz}"
+    fi
+    return 0
+}
 
 module_parameter() {
     [[ -r /sys/module/iwlmvm/parameters/lar_disable ]] || return 1
@@ -98,7 +153,7 @@ cmd_rollback() {
     if [[ -e $DROPIN ]]; then
         dropin_is_ours || die "refusing to remove modified drop-in: $DROPIN"
     fi
-    for f in /usr/local/bin/hotspot-on /usr/local/bin/hotspot-off; do
+    for f in /usr/local/bin/hotspot-on /usr/local/bin/hotspot-off /usr/local/bin/hotspot-setting; do
         if [[ -e $f ]]; then
             grep -q '^# hotspot-linux managed' "$f" ||
                 die "refusing to remove modified command: $f"
@@ -108,7 +163,7 @@ cmd_rollback() {
     rm -f "$TARGET" "$TARGET_TMP"
     rm -f "$REGDOM" "$REGDOM.tmp"
     rm -f "$DROPIN" "$DROPIN.tmp"
-    rm -f /usr/local/bin/hotspot-on /usr/local/bin/hotspot-off
+    rm -f /usr/local/bin/hotspot-on /usr/local/bin/hotspot-off /usr/local/bin/hotspot-setting
     rmdir "$(dirname "$DROPIN")" 2>/dev/null || true
     systemctl daemon-reload
     depmod "$KVER"
@@ -136,13 +191,17 @@ ap_summary() {
 }
 
 cmd_start() {
-    if systemctl is-active --quiet "$SERVICE"; then
+    if svc_is_on; then
         ap_summary
         return 0
     fi
     need_root start
+    # break any restart loop / stale state before a clean start
+    systemctl stop "$SERVICE" 2>/dev/null || true
+    systemctl reset-failed "$SERVICE" 2>/dev/null || true
     module_parameter || die "patched iwlmvm is not active (lar_disable missing/off).
     install + reboot first, then check: $0 status"
+    align_channel
     systemctl start "$SERVICE"
     local i ok=0
     for i in $(seq 1 40); do
@@ -150,16 +209,22 @@ cmd_start() {
         if iw dev ap0 info 2>/dev/null | grep -q '^[[:space:]]*channel'; then
             ok=1; break
         fi
+        if svc_is_off; then
+            break
+        fi
         sleep 0.5
     done
     if (( ok == 0 )); then
-        die "ap0 did not come up; check: journalctl -b -u $SERVICE --no-pager"
+        systemctl stop "$SERVICE" 2>/dev/null || true
+        systemctl reset-failed "$SERVICE" 2>/dev/null || true
+        die "ap0 did not come up; last lines:\n$(journalctl -b -u "$SERVICE" --no-pager -o cat 2>/dev/null | tail -n 8)\nfull log: journalctl -b -u $SERVICE --no-pager"
     fi
     ap_summary
 }
 
 cmd_stop() {
-    if ! systemctl is-active --quiet "$SERVICE"; then
+    if svc_is_off; then
+        systemctl reset-failed "$SERVICE" 2>/dev/null || true
         printf '%s\n' 'hotspot is already OFF.'
         return 0
     fi
@@ -167,10 +232,11 @@ cmd_stop() {
     systemctl stop "$SERVICE"
     local i
     for i in $(seq 1 20); do
-        systemctl is-active --quiet "$SERVICE" || break
+        svc_is_on || break
         sleep 0.5
     done
-    if systemctl is-active --quiet "$SERVICE"; then
+    systemctl reset-failed "$SERVICE" 2>/dev/null || true
+    if ! svc_is_off; then
         die "failed to stop $SERVICE; check: journalctl -b -u $SERVICE --no-pager"
     fi
     printf '%s\n' 'hotspot is OFF.'

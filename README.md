@@ -64,8 +64,10 @@ sudo lib/lar-control.sh install-cmds
 ```
 
 `create_ap` reads `/etc/create_ap.conf` (see `config/create_ap.conf.example`).
-Client connects on the same 5 GHz channel as your station uplink (e.g.
-channel 149), NAT-shared to the internet.
+`hotspot-on` automatically aligns `CHANNEL`/`FREQ_BAND` in that file to your
+live Wi-Fi uplink channel (single radio: the AP must ride the station's
+channel) and keeps a one-time backup at `/etc/create_ap.conf.bak-align`.
+NAT-shared to the internet.
 
 ## Changing SSID / password
 
@@ -179,9 +181,10 @@ channel is actually programmed before reporting it.
 - **Secure Boot error in preflight** — the rebuilt module is unsigned;
   Secure Boot must be off (`mokutil --sb-state` shows
   `SecureBoot disabled`).
-- **Wi-Fi uplink drops the hotspot channel** — the AP rides the station's
-  channel; if your router moves the uplink (e.g. from 149 to another DFS
-  channel), stop the hotspot (`hotspot-off`), reconnect, start again
-  (`hotspot-on`). With `country ID` and LAR disabled the driver no longer
-  self-manages channels, so 149 stays AP-capable.
+- **Wi-Fi uplink moved to another channel** (e.g. `requested: channel 149`
+  but `connected: channel 36`) — no action needed: `hotspot-on` now aligns
+  `CHANNEL`/`FREQ_BAND` to the live uplink and starts cleanly, breaking any
+  restart loop first (`stop` + `reset-failed`). If you pinned a channel on
+  purpose in `/etc/create_ap.conf`, reconnect Wi-Fi to a network on that
+  channel first (or delete `CHANNEL=` to always follow the uplink).
 
