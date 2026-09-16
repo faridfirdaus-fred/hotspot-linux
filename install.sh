@@ -45,10 +45,11 @@ read -r _bin srcpkg ver < <(dpkg-query -W -f='${Package} ${Source} ${Version}\n'
 mods_src=$(dpkg-query -W -f='${Source}' "linux-modules-$KVER" 2>/dev/null || true)
 if [[ -n $mods_src ]]; then srcpkg=$mods_src; fi
 case $srcpkg in
+  linux|linux-*) ;; # bare 'linux' and flavour'd names are the unsigned src pkgs
   linux-signed)   srcpkg=linux ;;
   linux-signed-*) srcpkg=linux-${srcpkg#linux-signed-} ;;
+  *) die "unexpected source package: '$srcpkg' (image: $_bin)" ;;
 esac
-[[ $srcpkg == linux-* ]] || die "unexpected source package: '$srcpkg' (image: $_bin)"
 step "Source package: $srcpkg  version: $ver"
 
 # A running kernel that is not the newest installed one (pinned GRUB default,
