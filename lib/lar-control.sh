@@ -75,6 +75,32 @@ module_parameter() {
     grep -Eq '^(Y|1)$' /sys/module/iwlmvm/parameters/lar_disable
 }
 
+# Overrides installed for kernels other than the running one: the classic
+# "built it, then booted another kernel" trap (pinned GRUB default, or booting
+# an older kernel on purpose for out-of-tree drivers).
+other_overrides() {
+    local f
+    for f in /lib/modules/*/updates/iwlmvm.ko; do
+        [[ -e $f ]] || continue
+        [[ $f == "/lib/modules/$KVER/updates/iwlmvm.ko" ]] && continue
+        printf '%s\n' "${f#/lib/modules/}"
+    done
+}
+
+kernel_mismatch_note() {
+    local o list=''
+    while read -r o; do
+        [[ -n $o ]] || continue
+        list+="${list:+, }${o%%/*}"
+    done < <(other_overrides)
+    [[ -n $list ]] || return 0
+    printf 'WARN: patched iwlmvm is installed for %s, but this kernel is %s\n' \
+        "$list" "$KVER" >&2
+    printf '%s\n' \
+        '      the override only loads on the kernel it was built for;' \
+        '      rebuild for the running kernel: sudo ./install.sh (in the repo), then reboot' >&2
+}
+
 regdom_content() {
     printf '%s\n' \
         '# Kernel regulatory domain used by patched, non-self-managed iwlmvm.' \
@@ -97,17 +123,19 @@ dropin_content() {
 dropin_is_ours() { cmp -s "$DROPIN" <(dropin_content); }
 
 cmd_status() {
-    local failed=0 selected selected_srcversion runtime_srcversion regdom
+    local failed=0 selected selected_srcversion runtime_srcversion regdom others
     selected=$(modinfo -k "$KVER" -F filename iwlmvm 2>/dev/null || true)
     selected_srcversion=$(modinfo -k "$KVER" -F srcversion iwlmvm 2>/dev/null || true)
     runtime_srcversion=$(cat /sys/module/iwlmvm/srcversion 2>/dev/null || true)
     regdom=$(iw reg get 2>/dev/null || true)
-    printf 'kernel=%s\nselected=%s\nselected_srcversion=%s\nruntime_srcversion=%s\nloaded_parameter=%s\nservice=%s/%s\n' \
+    others=$(other_overrides | sed 's|/updates/iwlmvm.ko$||' | paste -sd', ' - || true)
+    printf 'kernel=%s\nselected=%s\nselected_srcversion=%s\nruntime_srcversion=%s\nloaded_parameter=%s\noverride_other_kernels=%s\nservice=%s/%s\n' \
         "$KVER" \
         "${selected:-missing}" \
         "${selected_srcversion:-missing}" \
         "${runtime_srcversion:-missing}" \
         "$(cat /sys/module/iwlmvm/parameters/lar_disable 2>/dev/null || echo missing)" \
+        "${others:-none}" \
         "$(systemctl is-enabled "$SERVICE" 2>/dev/null || true)" \
         "$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
     [[ $selected == "$TARGET" ]] || { printf 'FAIL: override not selected\n' >&2; failed=1; }
@@ -116,7 +144,10 @@ cmd_status() {
     module_parameter || { printf 'FAIL: lar_disable is not enabled\n' >&2; failed=1; }
     grep -q '^country ID:' <<<"$regdom" || { printf 'FAIL: country ID absent\n' >&2; failed=1; }
     grep -q '(self-managed)' <<<"$regdom" && { printf 'FAIL: phy remains self-managed\n' >&2; failed=1; }
-    (( failed == 0 )) || return 1
+    if (( failed != 0 )); then
+        kernel_mismatch_note
+        return 1
+    fi
     printf '%s\n' \
         'Runtime driver/regulatory checks PASS.' \
         "Start it: hotspot-on" \
@@ -201,8 +232,11 @@ cmd_start() {
     # break any restart loop / stale state before a clean start
     systemctl stop "$SERVICE" 2>/dev/null || true
     systemctl reset-failed "$SERVICE" 2>/dev/null || true
-    module_parameter || die "patched iwlmvm is not active (lar_disable missing/off).
+    if ! module_parameter; then
+        kernel_mismatch_note
+        die "patched iwlmvm is not active (lar_disable missing/off).
     install + reboot first, then check: $0 status"
+    fi
     align_channel
     systemctl start "$SERVICE"
     local i ok=0

@@ -170,6 +170,15 @@ channel is actually programmed before reporting it.
   loaded: run `sudo lib/lar-control.sh status` — it must say PASS; if it
   says "reboot required", you are on a kernel without the override
   (re-run `sudo ./install.sh` and reboot).
+- **`patched iwlmvm is not active (lar_disable missing/off)` although the
+  override *is* installed** — you booted a kernel it was not built for. The
+  override lives in `/lib/modules/<kver>/updates/` and only loads on that
+  exact kernel; a pinned `GRUB_DEFAULT` (e.g. an older kernel kept for the
+  NVIDIA/ZFS modules) is enough to land on another one. `sudo
+  lib/lar-control.sh status` reports it: `override_other_kernels=` plus a
+  `WARN: patched iwlmvm is installed for … but this kernel is …`. Fix: boot
+  the kernel you built for, or rebuild on the running one
+  (`sudo ./install.sh`, then reboot).
 - **`override already installed` / `config already exists`** during
   `install.sh` — a previous install exists. Remove it first:
   `sudo lib/lar-control.sh rollback && sudo reboot`, then re-run
