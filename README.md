@@ -1,9 +1,9 @@
 # hotspot-linux
 
-Enable 5 GHz AP mode (hotspot) on Intel Wi-Fi 6 (AX201/AX200/…) on Ubuntu by
-building a **patched `iwlmvm` kernel module** that disables LAR
-(Location Aware Regulatory) and letting the kernel regulatory core
-(`country ID`) manage channels instead of the driver/firmware.
+Enable 5 GHz AP mode (hotspot) on Intel Wi-Fi 6 (AX201/AX200/…) on **Fedora**
+and **Ubuntu** by building a **patched `iwlmvm` kernel module** that disables
+LAR (Location Aware Regulatory) and lets the kernel regulatory core
+(`country ID` by default) manage channels instead of the driver/firmware.
 
 Without the patch, hostapd fails with:
 `IEEE 802.11 Hardware does not support configured channel` /
@@ -11,20 +11,36 @@ Without the patch, hostapd fails with:
 
 ## What it does
 
-1. Detects the **running** kernel and its Ubuntu source package
-   (`linux-signed-hwe-7.0` → source `linux-hwe-7.0`, etc.).
-2. Downloads the exact source from Launchpad and **SHA256-verifies** every
-   file against the signed `.dsc` manifest.
-3. Applies `patches/lar_disable.patch` — adds module parameter
-   `lar_disable` defaulting to `true` (breaks the
-   `REGULATORY_WIPHY_SELF_MANAGED` path, channel 149 etc. become AP-capable).
-4. Builds `iwlmvm.ko` against the running kernel's headers and installs it to
-   `/lib/modules/<kver>/updates/iwlmvm.ko` (kernel-specific override; a newer
-   kernel without the override automatically falls back to the distro driver).
-5. Sets `ieee80211_regdom=ID` via `/etc/modprobe.d/cfg80211-regdom.conf`.
+1. Runs preflight checks (distro detection, **Secure Boot disabled**, stock
+   `iwlmvm` module presence).
+2. Fetches and cryptographically verifies the exact running kernel's source:
+   - **Fedora**: downloads `kernel-<ver>-<rel>.src.rpm` via DNF source repos
+     (Koji fallback), verifies RPM GPG signature + SHA256 digests (`rpm -K`),
+     extracts `drivers/net/wireless/intel/iwlwifi`, and applies any Red Hat
+     `iwlwifi` patch hunks.
+   - **Ubuntu**: downloads the `.dsc` + source files from Launchpad/archive
+     and SHA256-verifies every file before `dpkg-source -x`.
+3. Proves the unpatched build matches the stock module (`srcversion` when
+   `CONFIG_MODVERSIONS=y`; `vermagic`, `depends`, and full undefined symbol
+   table when `CONFIG_MODVERSIONS=n`).
+4. Applies `patches/lar_disable.patch` — adds module parameter `lar_disable`
+   defaulting to `true` and returns `false` from `iwl_mvm_is_lar_supported()`,
+   cleanly disabling LAR across init, mac80211 registration, scan, and D3
+   resume paths.
+5. Builds and strips `iwlmvm.ko`, verifies module metadata and symbol/CRC
+   compatibility, and installs it to `/lib/modules/<kver>/updates/iwlmvm.ko`
+   (kernel-specific override; a newer kernel without the override automatically
+   falls back to the distro driver).
+6. Sets `ieee80211_regdom=<country>` (default `ID`) via
+   `/etc/modprobe.d/cfg80211-regdom.conf`.
+7. Installs `create_ap` (CLI from `lakinduakash/linux-wifi-hotspot`),
+   `hostapd`, `dnsmasq`, seeds `/etc/create_ap.conf` (mode `0600`) if missing,
+   and installs the `hotspot-*` commands into `/usr/local/bin`.
 
 Nothing is enabled at boot. The hotspot (`create_ap.service`) is intentionally
-started **manually**.
+started **manually**. On Fedora, `firewalld` is handled automatically while the
+hotspot is running (runtime `trusted` zone on the AP interface, revoked cleanly
+on stop).
 
 ## Install (one command)
 
@@ -32,71 +48,71 @@ started **manually**.
 git clone git@github.com:faridfirdaus-fred/hotspot-linux.git
 cd hotspot-linux
 sudo ./install.sh
-sudo reboot
+sudo reboot          # or live-reload: sudo lib/lar-control.sh reload
 ```
 
-Requirements: Ubuntu, dpkg-managed kernel, **Secure Boot disabled**
-(the rebuilt module is unsigned — by design), internet access.
+Options:
+- `sudo ./install.sh --force` — safely reinstall/overwrite for the running kernel
+- `sudo ./install.sh --country US` — set a different 2-letter regulatory country
+- `sudo ./install.sh --no-create-ap` — build/install only the kernel module
 
-`install.sh` installs build deps via apt automatically and rolls back all file
-changes if anything fails.
+Requirements: Fedora or Ubuntu, package-managed kernel, **Secure Boot
+disabled** (the rebuilt module is unsigned — by design), internet access.
 
-## After reboot
+`install.sh` installs build and hotspot dependencies automatically and rolls
+back all file changes if anything fails.
+
+## After reboot (or reload)
 
 ```bash
-sudo lib/lar-control.sh status   # must report PASS
+hotspot-status                   # read-only check; must report PASS (no sudo)
+hotspot-setting                  # edit SSID/passphrase (or --ssid / --pass / show)
 hotspot-on                       # start the hotspot (prompts for sudo)
 hotspot-off                      # stop it
-hotspot-setting                  # edit SSID/passphrase (see below)
 ```
 
 `hotspot-on` is idempotent — when already running it prints a one-line
-summary (client count + channel). `hotspot-off` on a stopped hotspot is a
-no-op. If the repo ever moves, the installed commands still work (plain
-`systemctl` fallback) or can be pointed at the new location with
+summary (interface, SSID, client count, channel, gateway IP). `hotspot-off` on
+a stopped hotspot is a no-op. If the repo ever moves, the installed commands
+still work (`systemctl` fallback) or can be pointed at the new location with
 `HOTSPOT_LINUX_REPO=/new/path`.
 
-Already installed the patched module the manual way (override present, no
-`hotspot-on` command yet)? Just install the commands:
+Already installed the patched module the manual way? Install just the commands:
 
 ```bash
 sudo lib/lar-control.sh install-cmds
 ```
 
 `create_ap` reads `/etc/create_ap.conf` (see `config/create_ap.conf.example`).
-`hotspot-on` automatically aligns `CHANNEL`/`FREQ_BAND` in that file to your
-live Wi-Fi uplink channel (single radio: the AP must ride the station's
-channel) and keeps a one-time backup at `/etc/create_ap.conf.bak-align`.
-NAT-shared to the internet.
+`hotspot-on` automatically aligns `CHANNEL`, `FREQ_BAND`, and `HT_CAPAB`
+(`[HT40+]` / `[HT40-]` / HT20) to your live Wi-Fi uplink channel (single radio:
+the AP must ride the station's channel) and keeps a one-time backup at
+`/etc/create_ap.conf.bak-align`.
 
 ## Changing SSID / password
 
-The easy way:
+Interactive editor:
 
 ```bash
 hotspot-setting
 ```
 
-Opens `/etc/create_ap.conf` in nano (or `$VISUAL`/`$EDITOR`), then
-validates (SSID non-empty ≤32 bytes, passphrase ≥8 chars, no unquoted
-spaces, file still parses), **auto-restarts the hotspot if it is running**
-and prints the live SSID afterwards. A broken edit is rejected and the
-original config restored. Requires sudo when the hotspot is ON.
-
-Manual way — both live in `/etc/create_ap.conf` (default install:
-`SSID=MyAccessPoint`, `PASSPHRASE=12345678`):
+Direct CLI update or inspect:
 
 ```bash
-sudo nano /etc/create_ap.conf   # edit the SSID= and PASSPHRASE= lines
-hotspot-off && hotspot-on       # config is only read at start!
+hotspot-setting show
+hotspot-setting --ssid "My Hotspot" --pass "supersecret123"
+hotspot-setting --hidden 1
 ```
 
-- Passphrase must be **at least 8 characters** or hostapd refuses to start.
-- Avoid `=` inside the SSID; don't indent the lines.
-- All clients disconnect once and re-auth with the new credentials — normal.
-- No reinstall needed; the commands read the config on every start.
-- Optional: set `HIDDEN=1` in the same file to hide the SSID from scans
-  (clients must then add the network manually by typing the SSID).
+Validates the config against `create_ap`'s actual `KEY=VALUE` parser (SSID
+non-empty ≤32 bytes, passphrase 8–63 chars, no accidental literal quotes),
+**auto-restarts the hotspot if it is running**, and prints the live SSID
+afterwards. A broken edit is rejected and the original config is restored.
+
+Note: `create_ap` does **not** strip quotes in `/etc/create_ap.conf` — spaces
+work unquoted (`SSID=My Hotspot`), while wrapping a value in quotes broadcasts
+literal quote characters.
 
 ## Hotspot autostart (optional)
 
@@ -110,19 +126,19 @@ sudo lib/lar-control.sh enable
 This installs a systemd drop-in that waits for `network-online`, skips cleanly
 on kernels without the patched module, and limits restart storms.
 
-## Uninstall
+## Uninstall / roll back
 
 ```bash
 sudo ./uninstall.sh   # removes override, regdom config, commands; then reboot
 ```
 
-
-## Manage / roll back
+## Manage / diagnostics
 
 ```bash
-sudo lib/lar-control.sh status     # verify patch is active
-sudo lib/lar-control.sh verify     # installed module hash + srcversions
-sudo lib/lar-control.sh rollback   # remove override + regdom config
+hotspot-status                     # verify patch, Build-ID, regdom, 5 GHz ch149
+sudo lib/lar-control.sh reload     # live-reload iwlmvm without full reboot
+sudo lib/lar-control.sh verify     # installed module hash + Build-ID/srcversion
+sudo lib/lar-control.sh rollback   # remove override + regdom config + commands
 sudo reboot                        # distro driver loads again
 ```
 
@@ -132,68 +148,41 @@ upgrade if you want the hotspot back on 5 GHz.
 
 ## Files
 
-- `install.sh` — full installer (download → verify → patch → build → install → commands)
+- `install.sh` — full installer (preflight → verify source → patch → build → install → `create_ap` → commands)
 - `bin/hotspot-on` / `bin/hotspot-off` — start/stop the hotspot (installed to `/usr/local/bin`)
-- `bin/hotspot-setting` — edit SSID/passphrase: nano + validation + auto-restart
-- `lib/lar-control.sh` — status / start / stop / setting / enable / rollback / verify / install-cmds
-- `patches/lar_disable.patch` — the only kernel change (adds `lar_disable=true`)
+- `bin/hotspot-status` — read-only driver/regulatory/service health check
+- `bin/hotspot-setting` — edit/show/set SSID & passphrase with validation + auto-restart
+- `lib/lar-control.sh` — status / start / stop / reload / setting / enable / rollback / verify / install-cmds
+- `patches/lar_disable.patch` — kernel patch adding `lar_disable=true` and gating `iwl_mvm_is_lar_supported()`
 - `config/create_ap.conf.example` — hotspot config template
 
 ## Troubleshooting
 
-Passwordless fast paths vs sudo prompt (how the wrappers behave):
+Passwordless fast paths vs sudo prompt:
 
+- `hotspot-status` → always read-only, **no password**.
 - `hotspot-on` while already ON → prints the summary, **no password**.
 - `hotspot-off` while already OFF → prints "already OFF", **no password**.
-- Any real transition (start or stop) → the wrapper runs itself under `sudo`
-  automatically; you type your password once.
-- Technically: the wrapper only checks `systemctl is-active` (read-only) and
-  either runs `lib/lar-control.sh` directly or re-executes under `sudo`.
-  It never parses output to decide, so it can't be fooled by locale.
-
-Summary line right after `hotspot-on` may briefly show `0 client(s)` — clients
-reconnect within seconds. The start command waits (up to 20 s) until ap0's
-channel is actually programmed before reporting it.
+- Any real transition (start, stop, config edit) → elevates under `sudo`
+  automatically.
 
 ### Common failures
 
-- **`ERROR: run with sudo: sudo ... lar-control.sh <cmd>` printed by the
-  control script itself** — you ran it directly without sudo. The
-  `hotspot-on`/`hotspot-off` wrappers handle elevation for you; use them.
-- **`hotspot is ON — ap0: N client(s), channel: unknown`** (fixed in
-  `c5e23af`) — if your installed copy still shows this, refresh the commands:
-  `cd ~/hotspot-linux && git pull && sudo lib/lar-control.sh install-cmds`.
-- **`ap0 did not come up`** — check
+- **`AP interface did not come up`** — check
   `journalctl -b -u create_ap.service --no-pager`. If it says
   `Frequency 5745 not allowed for AP mode` or
-  `Hardware does not support configured channel`, the patched module is not
-  loaded: run `sudo lib/lar-control.sh status` — it must say PASS; if it
-  says "reboot required", you are on a kernel without the override
-  (re-run `sudo ./install.sh` and reboot).
+  `Hardware does not support configured channel`, run `hotspot-status` — it
+  must report PASS. If your Wi-Fi uplink is on a DFS channel (52–144), switch
+  your router/uplink to a non-DFS channel (e.g. 36–48 or 149–161) or 2.4 GHz.
 - **`patched iwlmvm is not active (lar_disable missing/off)` although the
-  override *is* installed** — you booted a kernel it was not built for. The
-  override lives in `/lib/modules/<kver>/updates/` and only loads on that
-  exact kernel; a pinned `GRUB_DEFAULT` (e.g. an older kernel kept for the
-  NVIDIA/ZFS modules) is enough to land on another one. `sudo
-  lib/lar-control.sh status` reports it: `override_other_kernels=` plus a
-  `WARN: patched iwlmvm is installed for … but this kernel is …`. Fix: boot
-  the kernel you built for, or rebuild on the running one
-  (`sudo ./install.sh`, then reboot).
-- **`override already installed` / `config already exists`** during
-  `install.sh` — a previous install exists. Remove it first:
-  `sudo lib/lar-control.sh rollback && sudo reboot`, then re-run
-  `sudo ./install.sh`. (If the regdom config was changed by hand, rollback
-  refuses and asks you to inspect it — intentional.)
-- **`$f exists and is not ours`** for `hotspot-on`/`hotspot-off` — something
-  else owns those names in `/usr/local/bin`; remove/replace it manually, the
-  installer refuses to overwrite foreign files.
-- **Secure Boot error in preflight** — the rebuilt module is unsigned;
-  Secure Boot must be off (`mokutil --sb-state` shows
-  `SecureBoot disabled`).
-- **Wi-Fi uplink moved to another channel** (e.g. `requested: channel 149`
-  but `connected: channel 36`) — no action needed: `hotspot-on` aligns
-  `CHANNEL`/`FREQ_BAND` to the live uplink and starts cleanly, breaking any
-  restart loop first (`stop` + `reset-failed`). The previous channel is kept
-  in `/etc/create_ap.conf.bak-align`. If you pinned a channel on purpose in
-  `/etc/create_ap.conf`, reconnect Wi-Fi to a network on that channel first.
-
+  override *is* installed** — you booted a kernel it was not built for.
+  `hotspot-status` reports `override_other_kernels=…` and warns. Fix: boot the
+  kernel you built for, or rebuild on the running kernel (`sudo ./install.sh`).
+- **`override already installed`** during `install.sh` — use
+  `sudo ./install.sh --force` to rebuild and replace in place, or run
+  `sudo lib/lar-control.sh rollback` first.
+- **Secure Boot error in preflight** — the rebuilt module is unsigned; disable
+  Secure Boot in UEFI/BIOS (`mokutil --sb-state` must show `SecureBoot disabled`).
+- **Clients connect on Fedora but get no IP / no internet** — `lar-control.sh`
+  adds the AP interface to the `firewalld` `trusted` zone while the hotspot is
+  active. Check `sudo firewall-cmd --zone=trusted --list-interfaces` while ON.
