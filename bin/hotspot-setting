@@ -11,107 +11,240 @@ if [[ ! -x $ctl ]]; then
 fi
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-trim() { local s=$1; s=${s#"${s%%[![:space:]]*}"}; s=${s%"${s##*[![:space:]]}"}; printf '%s' "$s"; }
-get_raw() { # raw value after KEY= (last match)
-    awk -F= -v k="$1" \
-        '$0 ~ "^[[:space:]]*" k "[[:space:]]*=" { v = substr($0, index($0, "=") + 1) }
-         END { print v }' "$CONF"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  hotspot-setting                              Edit /etc/create_ap.conf interactively
+  hotspot-setting show [--show-pass]           Show current hotspot settings
+  hotspot-setting --ssid NAME [--pass PASS] [--hidden 0|1]
+                                               Update settings directly and apply
+EOF
 }
-strip_dquotes() {
+
+trim() {
     local s=$1
-    if [[ $s == '"'*'"' ]]; then s=${s#\"}; s=${s%\"}; fi
+    s=${s#"${s%%[![:space:]]*}"}
+    s=${s%"${s##*[![:space:]]}"}
     printf '%s' "$s"
 }
 
-[[ -f $CONF ]] || die "missing $CONF (is create_ap installed?)"
+get_val() { # raw value after KEY= (last match, trimmed)
+    local raw
+    raw=$(awk -F= -v k="$1" \
+        '$0 ~ "^[[:space:]]*" k "[[:space:]]*=" { v = substr($0, index($0, "=") + 1) }
+         END { print v }' "$CONF" 2>/dev/null || true)
+    trim "$raw"
+}
 
-# pick editor BEFORE sudo so the user's choice survives sudo env_reset
-ed=${VISUAL:-}
-if (( EUID != 0 )); then
-    if [[ -n $ed ]]; then
-        exec sudo -- env HOTSPOT_EDITOR="$ed" "$self" setting-root "$@"
-    fi
-    exec sudo -- "$self" setting-root "$@"
-fi
-[[ ${1:-} == setting-root ]] && shift
-[[ -n ${HOTSPOT_EDITOR:-} ]] && ed=$HOTSPOT_EDITOR
-[[ -n $ed ]] || ed=${EDITOR:-}
-if [[ -z $ed ]]; then
-    if command -v nano >/dev/null 2>&1; then ed=nano
-    elif command -v vi >/dev/null 2>&1; then ed=vi
-    fi
-fi
-if (( EUID != 0 )); then
-    if [[ -n $ed ]]; then
-        exec sudo -- env HOTSPOT_EDITOR="$ed" "$self" "$@"
-    fi
-    exec sudo -- "$self" "$@"
-fi
-[[ -n ${HOTSPOT_EDITOR:-} ]] && ed=$HOTSPOT_EDITOR
-[[ -n ${ed:-} ]] || die 'no editor found; install nano or set EDITOR'
-[[ -x $ctl ]] || die "control script not found: $ctl"
+set_val() { # $1=KEY $2=VALUE -> atomic in-place update or append (no sed metachar traps)
+    local k=$1 v=$2 tmp
+    tmp=$(mktemp "${CONF}.tmp.XXXXXX")
+    awk -v k="$k" -v v="$v" '
+        BEGIN { found = 0 }
+        $0 ~ "^[[:space:]]*" k "[[:space:]]*=" {
+            print k "=" v
+            found = 1
+            next
+        }
+        { print }
+        END {
+            if (!found) print k "=" v
+        }
+    ' "$CONF" > "$tmp"
+    chmod --reference="$CONF" "$tmp" 2>/dev/null || chmod 0600 "$tmp"
+    mv "$tmp" "$CONF"
+}
 
-old_ssid_raw=$(get_raw SSID)
-old_pass_raw=$(get_raw PASSPHRASE)
-old_ssid=$(strip_dquotes "$(trim "$old_ssid_raw")")
-
-# validate_conf: echoes an error message, returns non-zero if invalid
+# Validate /etc/create_ap.conf matching create_ap's actual KEY=VALUE parser.
+# create_ap does NOT strip quotes (it reads line-by-line via read/eval), so
+# spaces are allowed unquoted and wrapping values in quotes broadcasts literal quotes.
 validate_conf() {
-    local ssid_raw pass_raw ssid pass
-    bash -n "$CONF" 2>/dev/null || { printf '%s does not parse (bash -n failed)' "$CONF"; return 1; }
-    ssid_raw=$(trim "$(get_raw SSID)")
-    pass_raw=$(trim "$(get_raw PASSPHRASE)")
-    ssid=$(strip_dquotes "$ssid_raw")
-    pass=$(strip_dquotes "$pass_raw")
-    [[ -n $ssid ]] || { printf 'SSID is empty — set e.g. SSID=MyNet'; return 1; }
-    (( $(printf '%s' "$ssid" | wc -c) <= 32 )) || { printf 'SSID longer than 32 bytes (802.11 limit): %s' "$ssid"; return 1; }
-    [[ $ssid_raw == *[[:space:]]* ]] && { printf 'SSID contains spaces — quote it: SSID="%s"' "$ssid_raw"; return 1; }
-    [[ -n ${pass//[[:space:]]/} ]] || { printf 'PASSPHRASE is empty'; return 1; }
-    (( ${#pass} >= 8 )) || { printf 'passphrase too short (min 8 characters)'; return 1; }
-    if [[ $pass_raw == *[[:space:]]* ]]; then
-        printf 'PASSPHRASE contains spaces — quote it: PASSPHRASE="%s"' "$pass_raw"
+    local line key ssid pass ch band hidden line_no=0
+    while IFS= read -r line || [[ -n $line ]]; do
+        line_no=$((line_no + 1))
+        line=$(trim "$line")
+        [[ -z $line || $line == '#'* ]] && continue
+        if [[ $line != *=* ]]; then
+            printf 'line %d is not KEY=VALUE: %s' "$line_no" "$line"
+            return 1
+        fi
+        key=$(trim "${line%%=*}")
+        if [[ ! $key =~ ^[A-Z0-9_]+$ ]]; then
+            printf 'line %d has invalid key name: %s' "$line_no" "$key"
+            return 1
+        fi
+    done < "$CONF"
+
+    ssid=$(get_val SSID)
+    pass=$(get_val PASSPHRASE)
+    ch=$(get_val CHANNEL)
+    band=$(get_val FREQ_BAND)
+    hidden=$(get_val HIDDEN)
+
+    [[ -n $ssid ]] || { printf 'SSID is empty — set e.g. SSID=MyHotspot'; return 1; }
+    if [[ ($ssid == '"'*'"' && ${#ssid} -ge 2) || ($ssid == "'"*"'" && ${#ssid} -ge 2) ]]; then
+        printf 'do not wrap SSID in quotes — create_ap broadcasts quotes literally (use: SSID=%s)' "${ssid:1:${#ssid}-2}"
+        return 1
+    fi
+    if (( $(LC_ALL=C printf '%s' "$ssid" | wc -c) > 32 )); then
+        printf 'SSID longer than 32 bytes (802.11 limit): %s' "$ssid"
+        return 1
+    fi
+
+    [[ -n $pass ]] || { printf 'PASSPHRASE is empty (min 8 characters)'; return 1; }
+    if [[ ($pass == '"'*'"' && ${#pass} -ge 2) || ($pass == "'"*"'" && ${#pass} -ge 2) ]]; then
+        printf 'do not wrap PASSPHRASE in quotes — create_ap treats quotes as part of the password'
+        return 1
+    fi
+    if (( ${#pass} < 8 || ${#pass} > 63 )); then
+        printf 'PASSPHRASE must be 8-63 characters (got %d)' "${#pass}"
+        return 1
+    fi
+
+    if [[ -n $ch && $ch != default && ! $ch =~ ^[0-9]+$ ]]; then
+        printf 'invalid CHANNEL: %s' "$ch"
+        return 1
+    fi
+    if [[ -n $band && $band != 2.4 && $band != 5 && $band != default ]]; then
+        printf 'invalid FREQ_BAND: %s (expected 2.4, 5, or default)' "$band"
+        return 1
+    fi
+    if [[ -n $hidden && $hidden != 0 && $hidden != 1 ]]; then
+        printf 'invalid HIDDEN: %s (expected 0 or 1)' "$hidden"
         return 1
     fi
     return 0
 }
 
-printf 'editing %s with %s ...\n' "$CONF" "$ed"
-cp -a -- "$CONF" "$CONF.bak-setting"
-# shellcheck disable=SC2086
-eval "$ed \"\$CONF\"" || {
-    cp -a -- "$CONF.bak-setting" "$CONF"
-    die 'editor exited with error; config unchanged'
-}
-err=$(validate_conf) || {
-    cp -a -- "$CONF.bak-setting" "$CONF"
-    die "invalid config (original restored): $err"
-}
-rm -f -- "$CONF.bak-setting"
+# Handle --help / -h before sudo
+case ${1:-} in
+    -h|--help) usage; exit 0 ;;
+esac
 
-ssid_raw=$(trim "$(get_raw SSID)")
-pass_raw=$(trim "$(get_raw PASSPHRASE)")
-ssid=$(strip_dquotes "$ssid_raw")
+# Handle read-only `show` (elevate only if $CONF is not readable by current user)
+if [[ ${1:-} == show ]]; then
+    if [[ ! -r $CONF ]]; then
+        if (( EUID != 0 )); then
+            exec sudo -- "$self" "$@"
+        fi
+        die "missing $CONF (is create_ap installed?)"
+    fi
+    show_pass=0
+    [[ ${2:-} == --show-pass ]] && show_pass=1
+    ssid=$(get_val SSID)
+    pass=$(get_val PASSPHRASE)
+    printf 'config         : %s\n' "$CONF"
+    printf 'SSID           : %s\n' "${ssid:-<unset>}"
+    if (( show_pass )); then
+        printf 'PASSPHRASE     : %s\n' "${pass:-<unset>}"
+    else
+        printf 'PASSPHRASE     : %s (%d chars; pass --show-pass to reveal)\n' \
+            "$(printf '%*s' "${#pass}" '' | tr ' ' '*')" "${#pass}"
+    fi
+    printf 'WIFI_IFACE     : %s\n' "$(get_val WIFI_IFACE)"
+    printf 'INTERNET_IFACE : %s\n' "$(get_val INTERNET_IFACE)"
+    printf 'FREQ_BAND      : %s\n' "$(get_val FREQ_BAND)"
+    printf 'CHANNEL        : %s\n' "$(get_val CHANNEL)"
+    printf 'COUNTRY        : %s\n' "$(get_val COUNTRY)"
+    printf 'GATEWAY        : %s\n' "$(get_val GATEWAY)"
+    printf 'HIDDEN         : %s\n' "$(get_val HIDDEN)"
+    exit 0
+fi
+
+# Capture BOTH VISUAL and EDITOR before sudo strips them via env_reset
+user_ed=${VISUAL:-${EDITOR:-}}
+if (( EUID != 0 )); then
+    if [[ -n $user_ed ]]; then
+        exec sudo -- env HOTSPOT_EDITOR="$user_ed" HOTSPOT_CONF="$CONF" "$self" "$@"
+    fi
+    exec sudo -- env HOTSPOT_CONF="$CONF" "$self" "$@"
+fi
+
+[[ -f $CONF ]] || die "missing $CONF (is create_ap installed?)"
+[[ -x $ctl ]] || die "control script not found: $ctl"
+
+# Parse optional non-interactive flags
+new_ssid='' set_ssid=0
+new_pass='' set_pass=0
+new_hidden='' set_hidden=0
+while (( $# > 0 )); do
+    case $1 in
+        --ssid)
+            (( $# >= 2 )) || die "--ssid requires a value"
+            new_ssid=$2; set_ssid=1; shift 2 ;;
+        --pass|--passphrase)
+            (( $# >= 2 )) || die "$1 requires a value"
+            new_pass=$2; set_pass=1; shift 2 ;;
+        --hidden)
+            (( $# >= 2 )) || die "--hidden requires 0 or 1"
+            new_hidden=$2; set_hidden=1; shift 2 ;;
+        *)
+            die "unknown option: $1 (try: hotspot-setting --help)" ;;
+    esac
+done
+
+old_ssid=$(get_val SSID)
+old_pass=$(get_val PASSPHRASE)
+
+bak=$(mktemp "${CONF}.bak-setting.XXXXXX")
+cp -a -- "$CONF" "$bak"
+restore_bak() { cp -a -- "$bak" "$CONF" 2>/dev/null || true; rm -f -- "$bak"; }
+
+if (( set_ssid || set_pass || set_hidden )); then
+    (( set_ssid )) && set_val SSID "$new_ssid"
+    (( set_pass )) && set_val PASSPHRASE "$new_pass"
+    (( set_hidden )) && set_val HIDDEN "$new_hidden"
+else
+    ed=${HOTSPOT_EDITOR:-${VISUAL:-${EDITOR:-}}}
+    if [[ -z $ed ]]; then
+        if command -v nano >/dev/null 2>&1; then ed=nano
+        elif command -v vi >/dev/null 2>&1; then ed=vi
+        else restore_bak; die 'no editor found; install nano or set EDITOR'
+        fi
+    fi
+    printf 'editing %s with %s ...\n' "$CONF" "$ed"
+    read -r -a ed_cmd <<< "$ed"
+    if ! "${ed_cmd[@]}" "$CONF"; then
+        restore_bak
+        die 'editor exited with error; config unchanged'
+    fi
+fi
+
+if ! err=$(validate_conf); then
+    restore_bak
+    die "invalid config (original restored): $err"
+fi
+rm -f -- "$bak"
+
+ssid=$(get_val SSID)
+pass=$(get_val PASSPHRASE)
 
 printf '%s\n' '--- config ---'
-if [[ $old_ssid_raw == "$ssid_raw" ]]; then
+if [[ $old_ssid == "$ssid" ]]; then
     printf 'SSID: %s (unchanged)\n' "${old_ssid:-<empty>}"
 else
     printf 'SSID: %s -> %s\n' "${old_ssid:-<empty>}" "$ssid"
 fi
-if [[ $old_pass_raw == "$pass_raw" ]]; then
+if [[ $old_pass == "$pass" ]]; then
     printf '%s\n' 'passphrase: unchanged'
 else
     printf '%s\n' 'passphrase: updated'
 fi
 
-# ---- apply: restart if running, otherwise remind ------------------------
-# NOTE: exact ActiveState check — activating/failed units also restart,
-# so a channel mismatch loop self-heals instead of needing manual cleanup.
-if [[ $(systemctl show "$SVC" -p ActiveState --value 2>/dev/null) == active ]]; then
-    printf '%s\n' 'hotspot is ON — restarting to apply ...'
+# Restart if active, activating, or reloading (so restart loops self-heal too)
+state=$(systemctl show "$SVC" -p ActiveState --value 2>/dev/null || echo unknown)
+if [[ $state == active || $state == activating || $state == reloading ]]; then
+    printf 'hotspot is %s — restarting to apply ...\n' "$state"
     "$ctl" stop
     "$ctl" start
-    live_ssid=$(iw dev ap0 info 2>/dev/null | awk '$1 == "ssid" { print $2 }')
+    ap_if=$(iw dev 2>/dev/null | awk '
+        $1 == "Interface" { cur = $2 }
+        $1 == "type" && $2 == "AP" { print cur; exit }
+    ' || true)
+    live_ssid=$(iw dev "${ap_if:-ap0}" info 2>/dev/null | awk '
+        $1 == "ssid" { sub(/^[[:space:]]*ssid[[:space:]]+/, ""); print; exit }
+    ' || true)
     if [[ -n $live_ssid ]]; then
         printf 'live SSID now: %s\n' "$live_ssid"
     fi

@@ -13,18 +13,19 @@ is_on()  { [[ $(systemctl show "$SVC" -p ActiveState --value 2>/dev/null) == act
 is_off() { local s; s=$(systemctl show "$SVC" -p ActiveState --value 2>/dev/null); [[ $s == inactive || $s == failed ]]; }
 
 if [[ -x $ctl ]]; then
-    # passwordless fast paths (read-only checks, no root needed).
-    # Only exact states qualify: starting/crashed units still need root
-    # so the control script can stop/reset/align them.
+    # Passwordless fast path when already OFF.
     if [[ $verb == start ]] && is_on; then
-        exec "$ctl" start          # prints summary without root
+        exec "$ctl" start
     fi
     if [[ $verb == stop ]] && is_off; then
-        exec "$ctl" stop           # 'already OFF' without root
+        exec "$ctl" stop
     fi
-    exec sudo "$ctl" "$verb"
+    if (( EUID == 0 )); then
+        exec "$ctl" "$verb" "$@"
+    fi
+    exec sudo -- "$ctl" "$verb" "$@"
 fi
-# repo moved or removed — plain service control fallback
+# Repo moved or removed — plain service control fallback
 if [[ $verb == start ]] && is_on; then
     printf 'hotspot is ON (%s active).\n' "$SVC"
     exit 0
@@ -33,4 +34,7 @@ if [[ $verb == stop ]] && is_off; then
     printf 'hotspot is already OFF.\n'
     exit 0
 fi
-exec sudo systemctl "$verb" "$SVC"
+if (( EUID == 0 )); then
+    exec systemctl "$verb" "$SVC"
+fi
+exec sudo -- systemctl "$verb" "$SVC"
